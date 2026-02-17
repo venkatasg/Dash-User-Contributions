@@ -1,0 +1,11 @@
+{
+    "name": "Claude_API",
+    "version": "2026.02.17",
+    "archive": "Claude_API.tgz",
+    "author": {
+        "name": "venkatasg",
+        "link": "https://github.com/venkatasg"
+    },
+    "aliases": ["Claude", "Anthropic", "Anthropic API", "Claude AI"],
+    "specific_versions": []
+}
