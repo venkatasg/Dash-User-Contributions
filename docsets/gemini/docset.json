@@ -1,0 +1,11 @@
+{
+    "name": "Gemini_API",
+    "version": "2025.02.17",
+    "archive": "Gemini_API.tgz",
+    "author": {
+        "name": "venkatasg",
+        "link": "https://github.com/venkatasg"
+    },
+    "aliases": ["Gemini", "Google Gemini", "Gemini AI", "Google AI"],
+    "specific_versions": []
+}
