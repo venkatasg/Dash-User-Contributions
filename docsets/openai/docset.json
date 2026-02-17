@@ -1,0 +1,11 @@
+{
+    "name": "OpenAI_API",
+    "version": "2026.02.17",
+    "archive": "OpenAI_API.tgz",
+    "author": {
+        "name": "venkatasg",
+        "link": "https://github.com/venkatasg"
+    },
+    "aliases": ["OpenAI", "GPT", "ChatGPT API", "GPT API"],
+    "specific_versions": []
+}
