@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a Dash docset for the Google Gemini API Reference."""
+"""Generate a Dash docset for the Claude (Anthropic) API Reference."""
 
 import os
 import re
@@ -10,50 +10,79 @@ import urllib.parse
 
 from bs4 import BeautifulSoup
 
-DOCSET_NAME = "Gemini_API.docset"
+DOCSET_NAME = "Claude_API.docset"
 DOCUMENTS_PATH = os.path.join(DOCSET_NAME, "Contents/Resources/Documents")
 SQLITE_DB_PATH = os.path.join(DOCSET_NAME, "Contents/Resources/docSet.dsidx")
 INFO_PLIST_PATH = os.path.join(DOCSET_NAME, "Contents/Info.plist")
 DOWNLOAD_DIR = "downloaded_docs"
-BASE_URL = "https://ai.google.dev/api"
-ARCHIVE_NAME = "Gemini_API.tgz"
+BASE_URL = "https://platform.claude.com/docs/en/api/"
+ARCHIVE_NAME = "Claude_API.tgz"
 
 # API Reference pages only.
 # Each entry is (relative_path, display_name, entry_type).
-# Entry types:
+# Entry types use Dash-supported types:
 #   Guide     - overview/introductory pages
-#   Method    - API methods (generateContent, embedContent, etc.)
-#   Resource  - API resource pages (Models, Files, etc.)
-#   Setting   - configuration pages (caching, API versions)
-#   Section   - sub-headings (auto-generated)
+#   Method    - API endpoint pages (POST/GET/DELETE etc.)
+#   Resource  - resource grouping pages
+#   Library   - SDK pages
+#   Setting   - configuration/versioning pages
+#   Error     - error reference
+#   Event     - streaming events
+#   Sample    - example pages
+#   Section   - sub-headings within pages (auto-generated)
 DOC_PAGES = [
-    # Overview
-    ("", "Gemini API Reference Overview", "Guide"),
-    # Capabilities
-    ("models", "Models", "Resource"),
-    ("generate-content", "Generating Content", "Resource"),
-    ("live", "Live API", "Resource"),
-    ("live_music", "Live Music API", "Resource"),
-    ("interactions-api", "Interactions API", "Resource"),
-    ("tokens", "Tokens", "Resource"),
-    ("files", "Files", "Resource"),
-    ("batch-api", "Batch API", "Resource"),
-    ("caching", "Caching", "Resource"),
-    ("embeddings", "Embeddings", "Resource"),
-    # File Search
-    ("file-search/file-search-stores", "File Search Stores", "Resource"),
-    ("file-search/documents", "File Search Documents", "Resource"),
-    # Reference
-    ("all-methods", "All Methods", "Guide"),
+    # API Overview
+    ("overview", "API Overview", "Guide"),
+    ("beta-headers", "Beta Headers", "Setting"),
+    ("errors", "Errors", "Error"),
+    ("rate-limits", "Rate Limits", "Setting"),
+    ("service-tiers", "Service Tiers", "Setting"),
+    ("versioning", "API Versioning", "Setting"),
+    ("ip-addresses", "IP Addresses", "Setting"),
+    ("supported-regions", "Supported Regions", "Setting"),
+    ("openai-sdk", "OpenAI SDK Compatibility", "Guide"),
+    # Client SDKs
+    ("client-sdks", "Client SDKs", "Guide"),
+    ("sdks/python", "Python SDK", "Library"),
+    ("sdks/typescript", "TypeScript SDK", "Library"),
+    ("sdks/java", "Java SDK", "Library"),
+    ("sdks/go", "Go SDK", "Library"),
+    ("sdks/ruby", "Ruby SDK", "Library"),
+    ("sdks/csharp", "C# SDK", "Library"),
+    ("sdks/php", "PHP SDK", "Library"),
+    # Messages API
+    ("messages", "POST /v1/messages", "Method"),
+    ("messages-streaming", "Messages Streaming", "Event"),
+    ("messages-examples", "Messages Examples", "Sample"),
+    ("messages-count-tokens", "POST /v1/messages/count_tokens", "Method"),
+    # Message Batches API
+    ("creating-message-batches", "POST /v1/messages/batches", "Method"),
+    ("retrieving-message-batches", "GET /v1/messages/batches/:id", "Method"),
+    ("listing-message-batches", "GET /v1/messages/batches", "Method"),
+    ("canceling-message-batches", "POST /v1/messages/batches/:id/cancel", "Method"),
+    ("retrieving-message-batch-results", "GET /v1/messages/batches/:id/results", "Method"),
+    ("deleting-message-batches", "DELETE /v1/messages/batches/:id", "Method"),
+    # Models API
+    ("models-list", "GET /v1/models", "Method"),
+    ("models-get", "GET /v1/models/:id", "Method"),
+    # Files API
+    ("files-create", "POST /v1/files", "Method"),
+    ("files-list", "GET /v1/files", "Method"),
+    ("files-get", "GET /v1/files/:id", "Method"),
+    ("files-delete", "DELETE /v1/files/:id", "Method"),
+    ("files-download", "GET /v1/files/:id/content", "Method"),
+    # Skills API
+    ("skills/create-skill", "POST /v1/skills", "Method"),
+    ("skills/list-skills", "GET /v1/skills", "Method"),
+    ("skills/get-skill", "GET /v1/skills/:id", "Method"),
+    ("skills/update-skill", "PUT /v1/skills/:id", "Method"),
+    ("skills/delete-skill", "DELETE /v1/skills/:id", "Method"),
 ]
-
-# Also download the API versions page which is under /gemini-api/docs/
-API_VERSIONS_PATH = "gemini-api/docs/api-versions"
 
 
 def download_docs():
     """Download API reference pages using wget."""
-    print("Downloading Gemini API reference...")
+    print("Downloading Claude API reference...")
 
     if os.path.exists(DOWNLOAD_DIR):
         shutil.rmtree(DOWNLOAD_DIR)
@@ -78,9 +107,8 @@ def download_docs():
                 "--random-wait",
                 "-e", "robots=off",
                 "--reject", "*.zip,*.tar.gz,*.whl,*.exe",
-                "--reject-regex", r".*[@?].*=.*",
-                "-I", "/api/,/static/",
-                "-X", "/api/palm",          # exclude deprecated PaLM
+                "--reject-regex", r".*(/(de|es|fr|it|ja|ko|pt|zh)/).*",
+                "-I", "/docs/en/api/,/static/,/_next/",
                 "-P", DOWNLOAD_DIR,
                 BASE_URL,
             ],
@@ -108,14 +136,16 @@ def setup_structure():
 
 def copy_docs():
     """Copy downloaded documentation into the docset."""
-    source = os.path.join(DOWNLOAD_DIR, "api")
+    source = os.path.join(DOWNLOAD_DIR, "docs", "en", "api")
     if not os.path.exists(source):
-        print(f"Warning: Expected source docs at {source}")
-        for root, dirs, files in os.walk(DOWNLOAD_DIR):
-            if any(f.endswith(".html") for f in files):
-                source = root
-                print(f"Found HTML files at: {source}")
-                break
+        source = os.path.join(DOWNLOAD_DIR, "docs", "en")
+        if not os.path.exists(source):
+            print(f"Warning: Expected source docs at {source}")
+            for root, dirs, files in os.walk(DOWNLOAD_DIR):
+                if any(f.endswith(".html") for f in files):
+                    source = root
+                    print(f"Found HTML files at: {source}")
+                    break
 
     if os.path.exists(source):
         for item in os.listdir(source):
@@ -127,21 +157,17 @@ def copy_docs():
                 shutil.copy2(s, d)
 
     # Copy static assets
-    static_dir = os.path.join(DOWNLOAD_DIR, "static")
-    if os.path.exists(static_dir):
-        dest_static = os.path.join(DOCUMENTS_PATH, "_static")
-        shutil.copytree(static_dir, dest_static, dirs_exist_ok=True)
+    for static_name in ["static", "_next"]:
+        static_dir = os.path.join(DOWNLOAD_DIR, static_name)
+        if os.path.exists(static_dir):
+            dest_static = os.path.join(DOCUMENTS_PATH, f"_{static_name}")
+            shutil.copytree(static_dir, dest_static, dirs_exist_ok=True)
 
-    # Remove redirect and variant pages, and PaLM pages
+    # Remove redirect, non-English, and non-API pages
     for root, dirs, files in os.walk(DOCUMENTS_PATH):
         for f in files:
             if f.endswith(".html"):
                 fpath = os.path.join(root, f)
-                relpath = os.path.relpath(fpath, DOCUMENTS_PATH)
-                # Remove PaLM pages if any slipped through
-                if "palm" in relpath.lower():
-                    os.remove(fpath)
-                    continue
                 if "@" in f or "?" in f:
                     os.remove(fpath)
                     continue
@@ -161,21 +187,21 @@ def create_plist():
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>gemini-api</string>
+    <string>claude-api</string>
     <key>CFBundleName</key>
-    <string>Gemini API</string>
+    <string>Claude API</string>
     <key>DocSetPlatformFamily</key>
-    <string>gemini</string>
+    <string>claude</string>
     <key>isDashDocset</key>
     <true/>
     <key>dashIndexFilePath</key>
-    <string>index.html</string>
+    <string>overview.html</string>
     <key>DashDocSetFamily</key>
     <string>dashtoc</string>
     <key>isJavaScriptEnabled</key>
     <true/>
     <key>DashDocSetFallbackURL</key>
-    <string>https://ai.google.dev/api</string>
+    <string>https://platform.claude.com/docs/en/api/</string>
     <key>DashDocSetDefaultFTSEnabled</key>
     <true/>
 </dict>
@@ -199,34 +225,30 @@ def classify_heading(heading_text):
     """Determine the Dash entry type for a heading based on its content."""
     lower = heading_text.lower()
 
-    # HTTP method patterns (e.g. "POST /v1beta/models/{model}:generateContent")
+    # HTTP method patterns
     if re.match(r"^(get|post|put|patch|delete|head|options)\s+/", lower):
-        return "Method"
-
-    # Method names (e.g. "models.generateContent", "files.delete")
-    if re.match(r"^[a-z]+\.[a-z]", lower):
         return "Method"
 
     # Parameter-like headings
     if any(kw in lower for kw in ["parameter", "request body", "query param",
-                                   "path param", "body param", "field"]):
+                                   "path param", "header param", "body param"]):
         return "Parameter"
 
     # Response/return type headings
-    if any(kw in lower for kw in ["response body", "returns"]):
+    if any(kw in lower for kw in ["response", "returns", "return type"]):
         return "Value"
 
-    # Object/type definitions (e.g. "GenerateContentResponse", "Content")
-    if any(kw in lower for kw in ["object", "schema", "enum", "resource"]):
-        return "Type"
-
-    # Specific Gemini type names - CamelCase headings
-    if re.match(r"^[A-Z][a-z]+[A-Z]", heading_text):
+    # Object/type definitions
+    if any(kw in lower for kw in ["object", "schema", "enum"]):
         return "Type"
 
     # Error headings
     if any(kw in lower for kw in ["error", "status code"]):
         return "Error"
+
+    # Event headings
+    if any(kw in lower for kw in ["event", "streaming"]):
+        return "Event"
 
     # Example headings
     if any(kw in lower for kw in ["example", "sample", "usage"]):
@@ -247,7 +269,12 @@ def get_page_category(relpath):
         if normalized == page_path or normalized.rstrip("/") == page_path:
             return display_name, entry_type
 
-    return None, "Resource"
+    # Fallback classification based on path patterns
+    if any(kw in normalized for kw in ["create", "list", "get", "delete",
+                                        "retrieve", "update", "cancel"]):
+        return None, "Method"
+
+    return None, "Guide"
 
 
 def index_docs():
@@ -273,7 +300,7 @@ def index_docs():
             relpath = os.path.relpath(abspath, DOCUMENTS_PATH)
 
             # Skip static asset HTML files
-            if relpath.startswith("_static"):
+            if relpath.startswith("_static") or relpath.startswith("_next"):
                 continue
 
             try:
@@ -287,7 +314,6 @@ def index_docs():
             title = title_tag.get_text().strip() if title_tag else None
 
             if title:
-                # Clean up title: "Text generation  |  Gemini API  |  Google AI for Developers"
                 title = re.split(r"\s+\|\s+", title)[0].strip()
                 for sep in [" - ", " \u2013 ", " :: "]:
                     if sep in title:
@@ -343,41 +369,42 @@ def inject_dash_css():
 
     Only hides sidebar, topbar, and search elements. Does not override
     the main content styling to preserve the original appearance.
-    Targets Google devsite-specific class names.
     """
     dash_css = """
 /* Dash docset: hide navigation chrome only */
-.devsite-header,
-.devsite-top-nav,
-.devsite-book-nav,
-.devsite-sidebar,
-.devsite-toc,
-.devsite-footer-utility,
-.devsite-footer-linkboxes,
-.devsite-banner,
-.devsite-search-form,
-.devsite-nav,
-.devsite-breadcrumb-list,
-.devsite-page-rating,
-.devsite-feedback,
-.devsite-content-footer,
+#mintlify-sidebar,
+.mint-sidebar,
+.mint-header,
+.mint-footer,
+header[role="banner"],
+nav[role="navigation"],
+.sidebar,
+.top-nav,
+.site-header,
+.site-footer,
+.search-form,
+.search-bar,
+input[type="search"],
+.breadcrumb,
+.breadcrumbs,
+.feedback-widget,
+.page-rating,
 .cookie-notification,
-.glue-cookie-notification-bar,
-header,
-nav[role="navigation"] {
+.cookie-banner,
+[data-is-touch-wrapper] > nav,
+button[aria-label="Search"],
+div[id*="search"],
+div[class*="search-overlay"] {
     display: none !important;
 }
 
 /* Expand main content to fill available width */
-.devsite-main-content {
+main,
+.main-content,
+article {
     margin-left: 0 !important;
     max-width: 100% !important;
     width: 100% !important;
-    padding-left: 0 !important;
-}
-
-.devsite-article-body {
-    max-width: 100% !important;
 }
 """
     # Inject as <style> tag in every HTML file for reliability
@@ -422,7 +449,7 @@ def cleanup():
 
 
 if __name__ == "__main__":
-    print("=== Gemini API Reference Dash Docset Generator ===\n")
+    print("=== Claude API Reference Dash Docset Generator ===\n")
 
     print("[1/7] Downloading API reference...")
     download_docs()
