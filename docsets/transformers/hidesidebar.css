@@ -1,23 +1,63 @@
-/* CSS stuff to hide the damn sidebar in rtd theme for Dash */
+/*
+ * hidesidebar.css
+ * ===============
+ * Hides HuggingFace website navigation chrome so the Dash docset viewer shows
+ * only the documentation content.
+ *
+ * The HuggingFace docs site uses SvelteKit with Tailwind CSS.  The key layout
+ * elements targeted below are:
+ *
+ *   header                          – top navigation bar (logo, sign-in, etc.)
+ *   #hf-doc-container > .sticky     – left sidebar (doc tree) and right TOC
+ *   #doc-footer                     – footer with prev/next page links
+ *   .SVELTE_HYDRATER outside <main> – SvelteKit hydration wrappers for the
+ *                                     header and other global UI components
+ */
 
-/* Why didn't I just alabaster theme? Because I want it to look pretty */
-
-/* This hides the search bar and the github star below it */
-.wy-side-nav-search{
-    display: none;
+/* ── Top navigation header ─────────────────────────────────────────────────── */
+header {
+    display: none !important;
 }
 
-.wy-nav-side{
-    display: none;  /*This hides the sidebar but leaves empty space*/
+/* ── Left navigation sidebar and right table-of-contents sidebar ────────────
+   Both sidebars are direct children of #hf-doc-container that carry the
+   Tailwind "sticky" utility class.  The main content div does not. */
+#hf-doc-container > .sticky {
+    display: none !important;
 }
 
-/* This takes care of the bad left margin after the above */
-.wy-nav-content-wrap {
-    margin-left: auto;
-    margin-right: auto;
+/* ── Page footer ─────────────────────────────────────────────────────────────*/
+#doc-footer {
+    display: none !important;
 }
 
-/* This deletes the login and models buttons in top right */
-div.menu {
-    display: none;
+/* ── SvelteKit hydration wrappers that live outside <main> ───────────────────
+   These wrap the header and global modals; none of them contain doc content. */
+.flex.min-h-dvh.flex-col > .SVELTE_HYDRATER {
+    display: none !important;
+}
+
+/* ── Make the content column fill the full width ─────────────────────────────
+   Once the sidebars are gone the flex container needs to let the content
+   column expand.  #hf-doc-container switches from lg:flex to plain block so
+   the single remaining child fills the viewport. */
+#hf-doc-container {
+    display: block !important;
+}
+
+#hf-doc-container > .min-w-0 {
+    max-width: 100% !important;
+    width: 100% !important;
+}
+
+/* ── Remove the max-width cap on the prose content ───────────────────────────*/
+.prose-doc,
+.prose {
+    max-width: 100% !important;
+}
+
+/* ── Reduce outer padding now that the sidebars are gone ─────────────────────*/
+#hf-doc-container > div:not(.sticky) > div {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
 }
