@@ -12,6 +12,20 @@
  *   #doc-footer                     – footer with prev/next page links
  *   .SVELTE_HYDRATER outside <main> – SvelteKit hydration wrappers for the
  *                                     header and other global UI components
+ *
+ * Additional fixes for the Dash viewer
+ * -------------------------------------
+ *   div[class*="from-orange-300"]   – "Join the Hugging Face community" promo
+ *                                     banner (orange gradient) above the content
+ *   .huggingchat-input-container    – HuggingChat AI assistant widget that
+ *                                     appears fixed in the bottom-right corner
+ *   a.header-link                   – per-heading and per-parameter anchor link
+ *                                     icons; on the website they are hidden until
+ *                                     hover but in Dash the with-hover: Tailwind
+ *                                     variants may not apply, leaving SVG icons
+ *                                     visible before every parameter name
+ *   .code-block > div.absolute      – "copy to clipboard" button overlay on
+ *                                     code blocks (opacity-0 but can peek through)
  */
 
 /* ── Top navigation header ─────────────────────────────────────────────────── */
@@ -34,6 +48,41 @@ header {
 /* ── SvelteKit hydration wrappers that live outside <main> ───────────────────
    These wrap the header and global modals; none of them contain doc content. */
 .flex.min-h-dvh.flex-col > .SVELTE_HYDRATER {
+    display: none !important;
+}
+
+/* ── "Join the Hugging Face community" promotional banner ────────────────────
+   The banner sits above the page content inside .prose-doc and uses an orange
+   gradient (from-orange-300/*).  The attribute selector matches all Tailwind
+   opacity variants (from-orange-300/10, /20, etc.). */
+div[class*="from-orange-300"] {
+    display: none !important;
+}
+
+/* ── HuggingChat AI assistant widget ─────────────────────────────────────────
+   Fixed-position floating widget in the bottom-right corner of every page. */
+.huggingchat-input-container {
+    display: none !important;
+}
+
+/* ── Heading and parameter anchor link icons ─────────────────────────────────
+   HuggingFace renders a small chain-link SVG icon next to every heading and
+   parameter name.  On the live site these are hidden (opacity-0 / display-none)
+   until the user hovers; the visibility is controlled by custom with-hover:*
+   and no-hover:* Tailwind variants.  In Dash's offline WebKit viewer those
+   variant classes may not resolve correctly, leaving the SVG icons rendered
+   as visible inline-block elements that overlap parameter names.
+   Hiding the whole anchor is safe: Dash uses its own search index for
+   navigation and does not need these per-entry permalink icons. */
+a.header-link {
+    display: none !important;
+}
+
+/* ── Code-block "copy" button overlay ────────────────────────────────────────
+   Each code block has an absolutely-positioned copy-to-clipboard button
+   (opacity-0 by default) and a tooltip arrow triangle.  Without JS they are
+   inert but can sometimes bleed through in Dash. */
+.code-block > div.absolute {
     display: none !important;
 }
 
