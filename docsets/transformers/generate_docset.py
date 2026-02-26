@@ -348,6 +348,13 @@ def process_page(
        and cross-links work when the page is loaded from inside the .docset.
     5. Insert ``<a name="//apple_ref/…" class="dashAnchor">`` anchors before each
        ``<span id="transformers.*">`` API entry so Dash can index them.
+    6. Remove unwanted UI elements: the "Join the Hugging Face community" promo
+       banner (orange gradient div), the HuggingChat AI widget, and code-block
+       copy-to-clipboard button overlays.
+    7. Remove ``<a class="header-link">`` anchor-link icons **after** entry
+       collection (those anchors are read by ``_collect_entries`` for Section
+       entries, but must be stripped from the saved HTML so the SVG chain icons
+       do not render visibly in Dash's offline WebKit viewer).
 
     Returns
     -------
@@ -406,8 +413,42 @@ def process_page(
         )
         span.insert(0, anchor)
 
+    # ── 6. Remove unwanted UI elements ───────────────────────────────────────
+    # "Join the Hugging Face community" promotional banner (orange gradient).
+    # Matches any div whose class list contains a token with "from-orange-300".
+    for el in soup.find_all(
+        "div",
+        class_=lambda c: c and any("from-orange-300" in cls for cls in c),
+    ):
+        el.decompose()
+
+    # HuggingChat AI assistant widget (fixed bottom-right corner).
+    for el in soup.find_all(class_="huggingchat-input-container"):
+        el.decompose()
+
+    # "Copy to clipboard" button overlay on code blocks (.code-block > div.absolute).
+    for el in soup.find_all(
+        lambda tag: (
+            tag.name == "div"
+            and tag.has_attr("class")
+            and "absolute" in tag["class"]
+            and tag.parent is not None
+            and tag.parent.has_attr("class")
+            and "code-block" in tag.parent["class"]
+        )
+    ):
+        el.decompose()
+
     # ── Collect entries from the now-modified soup ────────────────────────────
     entries = _collect_entries(soup, slug)
+
+    # ── 7. Remove heading/parameter anchor-link icons after entry collection ──
+    # _collect_entries reads a.header-link for Section entries, so these must
+    # be removed afterwards.  In Dash's offline WebKit the with-hover: Tailwind
+    # variants may not apply, leaving the SVG icons visible next to every
+    # parameter name.
+    for el in soup.find_all("a", class_="header-link"):
+        el.decompose()
 
     return str(soup), entries
 
