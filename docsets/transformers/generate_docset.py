@@ -15,9 +15,27 @@ Options
 -------
     --version VERSION   Transformers version to package (default: latest from PyPI)
     --output-dir DIR    Where to write the .docset and .tgz (default: script directory)
-    --workers N         Parallel download workers (default: 8)
+    --workers N         Parallel download workers (default: 4)
     --no-archive        Skip creating the .tgz archive
     --skip-hf-css       Do not bundle the HuggingFace compiled CSS (pages rely on CDN)
+    --fresh             Delete any existing .docset and start from scratch
+
+Resume behaviour
+----------------
+By default the script is safe to interrupt and re-run.  On startup it scans
+Documents/ for HTML files that have already been saved and skips re-downloading
+them.  The SQLite index is always rebuilt from scratch so it stays consistent
+with whatever files are on disk.
+
+Use --fresh to discard all previously downloaded files and start over.
+
+Rate limiting
+-------------
+HuggingFace enforces a request rate limit.  When a 429 response is received the
+script reads the ``Retry-After`` response header (or falls back to exponential
+backoff) and pauses *all* download workers for that duration.  It also
+progressively increases the per-request delay so that the rate of requests
+automatically drops after each 429.
 
 Requirements
 ------------
@@ -32,6 +50,7 @@ import shutil
 import sqlite3
 import sys
 import tarfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -67,8 +86,50 @@ PYPI_URL = "https://pypi.org/pypi/transformers/json"
 HF_DOCS_URL = "https://huggingface.co/docs/transformers/{version}/en/{page}"
 HF_BASE = "https://huggingface.co"
 
-# Seconds between successive requests *per worker* to avoid hammering the server
-REQUEST_DELAY = 0.15
+# Starting delay (seconds) between successive requests per worker.
+# The rate limiter raises this automatically when 429 responses are received.
+REQUEST_DELAY = 1.0
+
+# ── Adaptive rate-limiting state (shared across worker threads) ────────────────
+#
+# _pause_event:   cleared when a 429 is being handled; all workers block on it
+#                 before each request so they pause until the back-off elapses.
+# _pause_lock:    ensures only one thread triggers the pause at a time.
+# _current_delay: per-request sleep; doubles on each 429 up to _MAX_DELAY.
+#
+_pause_event: threading.Event = threading.Event()
+_pause_event.set()          # start unpaused
+_pause_lock: threading.Lock = threading.Lock()
+_current_delay: float = REQUEST_DELAY
+_MAX_DELAY: float = 60.0    # never wait more than this between individual requests
+
+
+def _handle_rate_limit(retry_after: float) -> None:
+    """
+    Called by the first worker that receives a 429.
+
+    Clears ``_pause_event`` so every other worker blocks before its next
+    request, doubles ``_current_delay`` (up to ``_MAX_DELAY``), sleeps for
+    *retry_after* seconds, then sets the event again to let everyone proceed.
+    """
+    global _current_delay
+    with _pause_lock:
+        if not _pause_event.is_set():
+            # Another thread is already handling this round of rate-limiting;
+            # return immediately — our caller will block on _pause_event.wait().
+            return
+        _pause_event.clear()
+        _current_delay = min(_current_delay * 2.0, _MAX_DELAY)
+        log.warning(
+            "Rate limited (429) — pausing all workers for %.0fs "
+            "(per-request delay raised to %.1fs)",
+            retry_after,
+            _current_delay,
+        )
+    # Lock is released here so other threads can check the event freely.
+    time.sleep(retry_after)
+    _pause_event.set()
+    log.info("Rate-limit pause over — resuming downloads.")
 
 # HTTP headers that mimic a real browser
 _HEADERS = {
@@ -197,6 +258,69 @@ def classify_api_entry(span_id: str, heading_text: str) -> tuple[str, str]:
 
 
 # ── HTML processing ────────────────────────────────────────────────────────────
+#
+# _collect_entries is the shared core that reads index entries out of an already-
+# parsed BeautifulSoup tree.  It is called by both process_page (fresh download)
+# and index_cached_page (resume from disk).  This guarantees that the two paths
+# produce identical entries without duplicating the logic.
+
+def _collect_entries(
+    soup: BeautifulSoup, slug: str
+) -> list[tuple[str, str, str]]:
+    """
+    Extract Dash search-index entries from a parsed documentation page.
+
+    Works on both freshly downloaded pages (called from ``process_page`` after
+    anchors have been injected) and on already-processed cached pages (called
+    from ``index_cached_page``).  The span IDs added by HuggingFace are still
+    present in both cases.
+    """
+    entries: list[tuple[str, str, str]] = []
+
+    # API entries — <span id="transformers.*">
+    for span in soup.find_all("span", id=lambda x: x and x.startswith("transformers.")):
+        span_id: str = span["id"]
+        heading = span.find(["h3", "h4", "h5"])
+        heading_text = heading.get_text().strip() if heading else ""
+        display_name, entry_type = classify_api_entry(span_id, heading_text)
+        entries.append((display_name, entry_type, f"{slug}.html#{span_id}"))
+
+    # Section headings — <a class="header-link" href="#section-id">
+    for a_tag in soup.find_all("a", class_="header-link"):
+        href = a_tag.get("href", "")
+        if not (href.startswith("#") and len(href) > 1):
+            continue
+        section_id = href[1:]
+        if section_id.startswith("transformers."):
+            continue  # already captured above
+        parent = a_tag.find_parent(["h1", "h2", "h3", "h4", "h5", "h6"])
+        if parent:
+            section_name = parent.get_text().strip()
+            section_name = re.sub(r"\s*\ue0a0.*$", "", section_name).strip()
+            if section_name:
+                entries.append((section_name, "Section", f"{slug}.html{href}"))
+
+    # Page-level Guide entry
+    title_tag = soup.find("title")
+    if title_tag:
+        page_title = title_tag.get_text().strip().split(" - ")[0].strip()
+        if page_title:
+            entries.append((page_title, "Guide", f"{slug}.html"))
+
+    return entries
+
+
+def index_cached_page(html: str, slug: str) -> list[tuple[str, str, str]]:
+    """
+    Extract index entries from an already-processed HTML file on disk.
+
+    Used during resume: the file has already had Dash anchors injected and CSS
+    rewritten, so we just parse it and call ``_collect_entries`` — no HTML
+    modifications are made.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    return _collect_entries(soup, slug)
+
 
 def make_relative_css_path(slug: str, filename: str) -> str:
     """Return the correct relative path from a page slug to a CSS file in Documents/."""
@@ -231,7 +355,6 @@ def process_page(
         Where *entries* is a list of (name, type, path) tuples for the SQLite index.
     """
     soup = BeautifulSoup(html, "lxml")
-    entries: list[tuple[str, str, str]] = []
 
     # ── 1. Remove client-side scripts ─────────────────────────────────────────
     for script in soup.find_all("script"):
@@ -268,18 +391,12 @@ def process_page(
         if href.startswith("/") and not href.startswith("//"):
             a_tag["href"] = urljoin(HF_BASE, href)
 
-    # ── 5. Inject Dash anchors and collect index entries ──────────────────────
-    api_spans = soup.find_all(
-        "span", id=lambda x: x and x.startswith("transformers.")
-    )
-    for span in api_spans:
+    # ── 5. Inject Dash anchors ────────────────────────────────────────────────
+    for span in soup.find_all("span", id=lambda x: x and x.startswith("transformers.")):
         span_id: str = span["id"]
         heading = span.find(["h3", "h4", "h5"])
         heading_text = heading.get_text().strip() if heading else ""
-
         display_name, entry_type = classify_api_entry(span_id, heading_text)
-
-        # Insert Dash TOC anchor as the first child of the span
         anchor = soup.new_tag(
             "a",
             attrs={
@@ -289,31 +406,8 @@ def process_page(
         )
         span.insert(0, anchor)
 
-        entries.append((display_name, entry_type, f"{slug}.html#{span_id}"))
-
-    # ── Collect section-level headings as Section entries ─────────────────────
-    for a_tag in soup.find_all("a", class_="header-link"):
-        href = a_tag.get("href", "")
-        if not (href.startswith("#") and len(href) > 1):
-            continue
-        section_id = href[1:]
-        if section_id.startswith("transformers."):
-            # Already captured as an API entry above
-            continue
-        parent = a_tag.find_parent(["h1", "h2", "h3", "h4", "h5", "h6"])
-        if parent:
-            section_name = parent.get_text().strip()
-            # Trim the anchor link icon text that's sometimes included
-            section_name = re.sub(r"\s*\ue0a0.*$", "", section_name).strip()
-            if section_name:
-                entries.append((section_name, "Section", f"{slug}.html{href}"))
-
-    # ── Add a Guide entry for the page itself ─────────────────────────────────
-    title_tag = soup.find("title")
-    if title_tag:
-        page_title = title_tag.get_text().strip().split(" - ")[0].strip()
-        if page_title:
-            entries.append((page_title, "Guide", f"{slug}.html"))
+    # ── Collect entries from the now-modified soup ────────────────────────────
+    entries = _collect_entries(soup, slug)
 
     return str(soup), entries
 
@@ -323,25 +417,68 @@ def process_page(
 def download_page(
     url: str,
     session: requests.Session,
-    max_retries: int = 3,
+    max_retries: int = 6,
 ) -> str | None:
-    """Download *url* and return the HTML body, or ``None`` on permanent failure."""
+    """
+    Download *url* and return the HTML body, or ``None`` on permanent failure.
+
+    429 handling
+    ------------
+    When the server returns 429 the function reads ``Retry-After`` from the
+    response headers (falling back to exponential backoff), calls
+    ``_handle_rate_limit`` which pauses every worker thread, then retries.
+    A 429 does **not** count towards *max_retries* so transient rate-limit
+    bursts do not abort the download.
+    """
+    rate_limit_hits = 0
+
     for attempt in range(max_retries):
+        # Block here if another thread is currently sleeping through a back-off.
+        _pause_event.wait()
+
         try:
             resp = session.get(url, headers=_HEADERS, timeout=30)
-            if resp.status_code == 404:
-                log.warning("404 Not Found: %s", url)
-                return None
-            resp.raise_for_status()
-            return resp.text
         except requests.RequestException as exc:
-            wait = 2 ** attempt
+            wait = min(2 ** attempt, 30)
             log.warning(
-                "Attempt %d/%d failed for %s: %s — retrying in %ds",
+                "Network error (attempt %d/%d) for %s: %s — retrying in %ds",
                 attempt + 1, max_retries, url, exc, wait,
             )
             if attempt < max_retries - 1:
                 time.sleep(wait)
+            continue
+
+        if resp.status_code == 404:
+            log.warning("404 Not Found: %s", url)
+            return None
+
+        if resp.status_code == 429:
+            rate_limit_hits += 1
+            raw = resp.headers.get("Retry-After", "")
+            try:
+                retry_after = float(raw)
+            except (ValueError, TypeError):
+                # Exponential: 60 s, 120 s, 240 s … capped at 10 min
+                retry_after = min(60 * (2 ** (rate_limit_hits - 1)), 600)
+            _handle_rate_limit(retry_after)
+            # Don't increment attempt — the pause already handled the back-off.
+            # Re-run the same attempt index after the event is set again.
+            continue
+
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            wait = min(2 ** attempt, 30)
+            log.warning(
+                "HTTP error (attempt %d/%d) for %s: %s — retrying in %ds",
+                attempt + 1, max_retries, url, exc, wait,
+            )
+            if attempt < max_retries - 1:
+                time.sleep(wait)
+            continue
+
+        return resp.text
+
     log.error("Giving up on %s after %d attempts", url, max_retries)
     return None
 
@@ -420,7 +557,7 @@ def main() -> None:
     parser.add_argument(
         "--workers",
         type=int,
-        default=8,
+        default=4,
         metavar="N",
         help="Number of parallel download workers.",
     )
@@ -437,6 +574,15 @@ def main() -> None:
             "Pages will load it from the CDN instead (requires internet in Dash)."
         ),
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help=(
+            "Delete any existing .docset directory and start from scratch. "
+            "Without this flag the script resumes automatically: already-downloaded "
+            "HTML files are reused, only missing pages are fetched."
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir).resolve()
@@ -447,11 +593,16 @@ def main() -> None:
     log.info("Output directory: %s", output_dir)
     log.info("=" * 60)
 
-    # ── Create docset directory structure ──────────────────────────────────────
+    # ── Create (or resume) docset directory structure ──────────────────────────
     docset_dir = output_dir / f"{DOCSET_NAME}.docset"
-    if docset_dir.exists():
-        log.info("Removing existing docset directory: %s", docset_dir)
+
+    if args.fresh and docset_dir.exists():
+        log.info("--fresh: removing existing docset directory: %s", docset_dir)
         shutil.rmtree(docset_dir)
+    elif docset_dir.exists():
+        log.info("Resuming: keeping existing files in %s", docset_dir)
+    else:
+        log.info("Fresh build: creating %s", docset_dir)
 
     contents_dir, resources_dir, documents_dir = create_docset_dirs(docset_dir)
 
@@ -490,42 +641,65 @@ def main() -> None:
     session = requests.Session()
 
     if not args.skip_hf_css:
-        log.info("Downloading HuggingFace compiled CSS …")
-        # Download the index page to find the CSS URL
-        index_url = HF_DOCS_URL.format(version=f"v{version}", page="index")
-        index_html = download_page(index_url, session)
-        if index_html:
-            hf_css_url = find_hf_css_url(index_html)
-            if hf_css_url:
-                hf_css_filename = "hf_style.css"
-                css_dest = documents_dir / hf_css_filename
-                if not download_hf_css(hf_css_url, session, css_dest):
-                    log.warning("Falling back: pages will load HF CSS from CDN.")
+        hf_css_filename = "hf_style.css"
+        css_dest = documents_dir / hf_css_filename
+        if css_dest.exists():
+            log.info("HF CSS already present — skipping download (%s)", css_dest.name)
+        else:
+            log.info("Downloading HuggingFace compiled CSS …")
+            index_url = HF_DOCS_URL.format(version=f"v{version}", page="index")
+            index_html = download_page(index_url, session)
+            if index_html:
+                hf_css_url = find_hf_css_url(index_html)
+                if hf_css_url:
+                    if not download_hf_css(hf_css_url, session, css_dest):
+                        log.warning("Falling back: pages will load HF CSS from CDN.")
+                        hf_css_filename = None
+                else:
+                    log.warning("Could not locate HF CSS URL in index page.")
                     hf_css_filename = None
             else:
-                log.warning("Could not locate HF CSS URL in index page.")
-        else:
-            log.warning("Could not download index page to find HF CSS URL.")
+                log.warning("Could not download index page to find HF CSS URL.")
+                hf_css_filename = None
 
     # ── Download and process all pages ────────────────────────────────────────
-    success_count = 0
+    downloaded_count = 0
+    cached_count = 0
     error_count = 0
     total_entries = 0
 
     def process_one(
         title_slug: tuple[str, str],
-    ) -> tuple[str, str, list[tuple[str, str, str]]] | None:
-        """Worker: download + process one page. Returns (slug, html, entries) or None."""
+    ) -> tuple[str, str | None, list[tuple[str, str, str]]] | None:
+        """
+        Worker: fetch (or reuse) one page and extract its index entries.
+
+        Returns
+        -------
+        (slug, processed_html_or_None, entries)
+            *processed_html_or_None* is ``None`` when the file was already on
+            disk (cached) and does not need to be written again.
+        Returns ``None`` on unrecoverable download failure.
+        """
         _title, slug = title_slug
+        out_file = documents_dir / f"{slug}.html"
+
+        if out_file.exists():
+            # Resume path: re-index from the cached file without re-downloading.
+            cached_html = out_file.read_text(encoding="utf-8")
+            page_entries = index_cached_page(cached_html, slug)
+            return slug, None, page_entries   # None → skip write
+
+        # Fresh download path.
         url = HF_DOCS_URL.format(version=f"v{version}", page=slug)
-        time.sleep(REQUEST_DELAY)  # polite rate-limiting
+        time.sleep(_current_delay)            # respect the adaptive delay
         html = download_page(url, session)
         if html is None:
             return None
         processed_html, page_entries = process_page(html, slug, version, hf_css_filename)
         return slug, processed_html, page_entries
 
-    log.info("Downloading %d pages with %d workers …", len(pages), args.workers)
+    log.info("Processing %d pages with %d workers …", len(pages), args.workers)
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         future_map = {executor.submit(process_one, page): page for page in pages}
@@ -544,13 +718,18 @@ def main() -> None:
                 continue
 
             slug, processed_html, page_entries = result
+            is_cached = processed_html is None
 
-            # Save HTML file (create subdirectories as needed)
-            out_file = documents_dir / f"{slug}.html"
-            out_file.parent.mkdir(parents=True, exist_ok=True)
-            out_file.write_text(processed_html, encoding="utf-8")
+            # Save HTML file only for freshly downloaded pages.
+            if not is_cached:
+                out_file = documents_dir / f"{slug}.html"
+                out_file.parent.mkdir(parents=True, exist_ok=True)
+                out_file.write_text(processed_html, encoding="utf-8")
+                downloaded_count += 1
+            else:
+                cached_count += 1
 
-            # Index entries into SQLite
+            # Index entries into SQLite (always, so DB stays consistent).
             for name, entry_type, path in page_entries:
                 try:
                     conn.execute(
@@ -562,11 +741,13 @@ def main() -> None:
                     log.debug("DB insert skipped for %r: %s", name, db_exc)
 
             total_entries += len(page_entries)
-            success_count += 1
+            done = downloaded_count + cached_count
+            status = "(cached)" if is_cached else "✓"
             log.info(
-                "[%d/%d] ✓ %s  (%d entries)",
-                success_count,
+                "[%d/%d] %s %s  (%d entries)",
+                done,
                 len(pages),
+                status,
                 slug,
                 len(page_entries),
             )
@@ -575,8 +756,9 @@ def main() -> None:
     conn.close()
 
     log.info(
-        "Finished: %d pages OK, %d errors, %d index entries",
-        success_count,
+        "Finished: %d downloaded, %d cached, %d errors, %d index entries",
+        downloaded_count,
+        cached_count,
         error_count,
         total_entries,
     )
