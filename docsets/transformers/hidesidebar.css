@@ -26,6 +26,12 @@
  *                                     visible before every parameter name
  *   .code-block > div.absolute      – "copy to clipboard" button overlay on
  *                                     code blocks (opacity-0 but can peek through)
+ *   .prose.prose-doc .docstring li::before
+ *                                   – large decorative character injected by
+ *                                     hf_style.css before each parameter list
+ *                                     item; absolutely positioned, opacity 0.3,
+ *                                     font-size 2xl — renders as visible text
+ *                                     overlapping the parameter name in Dash
  */
 
 /* ── Top navigation header ─────────────────────────────────────────────────── */
@@ -84,6 +90,25 @@ a.header-link {
    inert but can sometimes bleed through in Dash. */
 .code-block > div.absolute {
     display: none !important;
+}
+
+/* ── Decorative ::before on parameter list items ─────────────────────────────
+   hf_style.css injects a large (font-size: 2xl), semi-transparent (opacity 0.3)
+   decorative character before every <li> inside .docstring via the rule:
+
+       .prose.prose-doc .docstring li:before {
+           content: var(--tw-content);   ← a Unicode glyph / chain-link icon
+           position: absolute;
+           font-size: var(--text-2xl);
+           opacity: .3;
+       }
+
+   In the live browser this character is hidden behind the list item background,
+   but in Dash's offline WebKit viewer the stacking/clipping differs and the
+   glyph renders visibly in front of the parameter name.
+   Setting content: none suppresses the pseudo-element entirely. */
+.prose.prose-doc .docstring li::before {
+    content: none !important;
 }
 
 /* ── Make the content column fill the full width ─────────────────────────────
