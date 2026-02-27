@@ -283,7 +283,7 @@ def _collect_entries(
         heading = span.find(["h3", "h4", "h5"])
         heading_text = heading.get_text().strip() if heading else ""
         display_name, entry_type = classify_api_entry(span_id, heading_text)
-        entries.append((display_name, entry_type, f"{slug}.html#{span_id}"))
+        entries.append((display_name, entry_type, f"{slug}#{span_id}"))
 
     # Section headings — <a class="header-link" href="#section-id">
     for a_tag in soup.find_all("a", class_="header-link"):
@@ -298,14 +298,14 @@ def _collect_entries(
             section_name = parent.get_text().strip()
             section_name = re.sub(r"\s*\ue0a0.*$", "", section_name).strip()
             if section_name:
-                entries.append((section_name, "Section", f"{slug}.html{href}"))
+                entries.append((section_name, "Section", f"{slug}{href}"))
 
     # Page-level Guide entry
     title_tag = soup.find("title")
     if title_tag:
         page_title = title_tag.get_text().strip().split(" - ")[0].strip()
         if page_title:
-            entries.append((page_title, "Guide", f"{slug}.html"))
+            entries.append((page_title, "Guide", f"{slug}"))
 
     return entries
 
@@ -346,7 +346,7 @@ def process_page(
     3. Inject ``<link rel="stylesheet" href="hidesidebar.css">`` to hide navigation.
     4. Rewrite ``<img src>`` root-relative URLs to absolute HF URLs.
        Rewrite ``<a href>`` links that point to other Transformers documentation
-       pages to local relative paths within the docset (e.g. ``../model_doc/bert.html``).
+       pages to local relative paths within the docset (e.g. ``../model_doc/bert``).
        All other root-relative links are made absolute so they open on the web.
     5. Insert ``<a name="//apple_ref/…" class="dashAnchor">`` anchors before each
        ``<span id="transformers.*">`` API entry so Dash can index them.
@@ -434,7 +434,7 @@ def process_page(
             # Link targets another page in this Transformers docset.
             # Rewrite to a local relative path so Dash opens it offline.
             target_slug = m.group(1).rstrip("/") or "index"
-            local_href = f"{root_prefix}{target_slug}.html"
+            local_href = f"{root_prefix}{target_slug}"
             if fragment:
                 local_href += f"#{fragment}"
             a_tag["href"] = local_href
@@ -588,7 +588,7 @@ def write_info_plist(contents_dir: Path, version: str) -> None:
         "DocSetPlatformFamily": DOCSET_NAME,
         "isDashDocset": True,
         "isJavaScriptEnabled": False,
-        "dashIndexFilePath": "index.html",
+        "dashIndexFilePath": "index",
         "DashDocSetFamily": "dashtoc",
         "DashDocSetFallbackURL": (
             f"https://huggingface.co/docs/transformers/v{version}/en/"
@@ -768,7 +768,7 @@ def main() -> None:
         Returns ``None`` on unrecoverable download failure.
         """
         _title, slug = title_slug
-        out_file = documents_dir / f"{slug}.html"
+        out_file = documents_dir / slug
 
         if out_file.exists():
             # Resume path: re-index from the cached file without re-downloading.
@@ -811,7 +811,7 @@ def main() -> None:
 
             # Save HTML file only for freshly downloaded pages.
             if not is_cached:
-                out_file = documents_dir / f"{slug}.html"
+                out_file = documents_dir / slug
                 out_file.parent.mkdir(parents=True, exist_ok=True)
                 out_file.write_text(processed_html, encoding="utf-8")
                 downloaded_count += 1
