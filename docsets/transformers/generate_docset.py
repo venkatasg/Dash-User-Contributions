@@ -344,8 +344,10 @@ def process_page(
     2. Rewrite the HuggingFace compiled CSS ``<link>`` to point at the local copy
        bundled inside the docset (if *hf_css_filename* is set).
     3. Inject ``<link rel="stylesheet" href="hidesidebar.css">`` to hide navigation.
-    4. Make relative ``<img src>`` and ``<a href>`` URLs absolute so that images
-       and cross-links work when the page is loaded from inside the .docset.
+    4. Rewrite ``<img src>`` root-relative URLs to absolute HF URLs.
+       Rewrite ``<a href>`` links that point to other Transformers documentation
+       pages to local relative paths within the docset (e.g. ``../model_doc/bert.html``).
+       All other root-relative links are made absolute so they open on the web.
     5. Insert ``<a name="//apple_ref/…" class="dashAnchor">`` anchors before each
        ``<span id="transformers.*">`` API entry so Dash can index them.
     6. Remove unwanted UI elements: the "Join the Hugging Face community" promo
@@ -387,16 +389,59 @@ def process_page(
     )
     head.append(hide_link)
 
-    # ── 4. Make relative URLs absolute ────────────────────────────────────────
+    # ── 4. Rewrite image and link URLs ────────────────────────────────────────
     for img in soup.find_all("img", src=True):
         src = img["src"]
         if src.startswith("/"):
             img["src"] = urljoin(HF_BASE, src)
 
+    # Regex that captures the page slug from any Transformers docs URL:
+    #   /docs/transformers/v5.2.0/en/{slug}
+    #   /docs/transformers/main/en/{slug}
+    #   /docs/transformers/en/{slug}          (unversioned)
+    doc_link_re = re.compile(
+        r"^/docs/transformers/(?:v[\d.]+/|main/)?en/([^#?]*)"
+    )
+    # Depth of this page within Documents/ (0 = top-level, 1 = one subdir, …).
+    slug_depth = slug.count("/")
+    root_prefix = "../" * slug_depth   # e.g. "" for depth-0, "../" for depth-1
+
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
-        if href.startswith("/") and not href.startswith("//"):
-            a_tag["href"] = urljoin(HF_BASE, href)
+        if not href or href.startswith("#") or href.startswith("mailto:"):
+            continue  # fragment-only or email links — leave unchanged
+
+        # Normalize to a root-relative path so one regex handles both
+        # root-relative (/docs/…) and already-absolute (https://hf.co/docs/…).
+        if href.startswith(HF_BASE):
+            root_rel = href[len(HF_BASE):]
+        elif href.startswith("http"):
+            continue  # external (GitHub, arxiv, …) — leave unchanged
+        elif href.startswith("//"):
+            continue  # protocol-relative — leave unchanged
+        elif href.startswith("/"):
+            root_rel = href
+        else:
+            continue  # page-relative — leave unchanged
+
+        # Separate the fragment anchor from the path.
+        fragment = ""
+        if "#" in root_rel:
+            root_rel, fragment = root_rel.split("#", 1)
+
+        m = doc_link_re.match(root_rel)
+        if m:
+            # Link targets another page in this Transformers docset.
+            # Rewrite to a local relative path so Dash opens it offline.
+            target_slug = m.group(1).rstrip("/") or "index"
+            local_href = f"{root_prefix}{target_slug}.html"
+            if fragment:
+                local_href += f"#{fragment}"
+            a_tag["href"] = local_href
+        else:
+            # Not a Transformers doc link; make it absolute so it opens on the web.
+            suffix = f"#{fragment}" if fragment else ""
+            a_tag["href"] = urljoin(HF_BASE, root_rel + suffix)
 
     # ── 5. Inject Dash anchors ────────────────────────────────────────────────
     for span in soup.find_all("span", id=lambda x: x and x.startswith("transformers.")):
