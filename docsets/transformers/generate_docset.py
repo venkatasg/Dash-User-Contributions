@@ -283,7 +283,7 @@ def _collect_entries(
         heading = span.find(["h3", "h4", "h5"])
         heading_text = heading.get_text().strip() if heading else ""
         display_name, entry_type = classify_api_entry(span_id, heading_text)
-        entries.append((display_name, entry_type, f"{slug}#{span_id}"))
+        entries.append((display_name, entry_type, f"{slug}.html#{span_id}"))
 
     # Section headings — <a class="header-link" href="#section-id">
     for a_tag in soup.find_all("a", class_="header-link"):
@@ -298,14 +298,14 @@ def _collect_entries(
             section_name = parent.get_text().strip()
             section_name = re.sub(r"\s*\ue0a0.*$", "", section_name).strip()
             if section_name:
-                entries.append((section_name, "Section", f"{slug}{href}"))
+                entries.append((section_name, "Section", f"{slug}.html{href}"))
 
     # Page-level Guide entry
     title_tag = soup.find("title")
     if title_tag:
         page_title = title_tag.get_text().strip().split(" - ")[0].strip()
         if page_title:
-            entries.append((page_title, "Guide", f"{slug}"))
+            entries.append((page_title, "Guide", f"{slug}.html"))
 
     return entries
 
@@ -773,8 +773,11 @@ def main() -> None:
         if out_file.exists():
             # Resume path: re-index from the cached file without re-downloading.
             cached_html = out_file.read_text(encoding="utf-8")
-            page_entries = index_cached_page(cached_html, slug)
-            return slug, None, page_entries   # None → skip write
+            processed_html, page_entries = process_page(cached_html, slug, version, hf_css_filename)
+            return slug, processed_html, page_entries
+            # Use below if you want to process only from downloaded HTML files
+            # page_entries = index_cached_page(cached_html, slug)
+            # return slug, None, page_entries   # None → skip write
 
         # Fresh download path.
         url = HF_DOCS_URL.format(version=f"v{version}", page=slug)
