@@ -1,0 +1,10 @@
+{
+    "name": "Overleaf",
+    "version": "1.0.0",
+    "archive": "Overleaf.tgz",
+    "author": {
+        "name": "Claude",
+        "link": "https://github.com/anthropics/claude-code"
+    },
+    "aliases": ["LaTeX", "Overleaf LaTeX"]
+}
