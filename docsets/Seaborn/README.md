@@ -5,39 +5,55 @@
 - [Paulo S. Costa](https://github.com/paw-lu)
 - [Xavier Yang](https://github.com/ivaquero)
 
-## Building Method 1
+## Building
 
-This docset is automatically generated via [paw-lu/seaborn-dash-docset](https://github.com/paw-lu/seaborn-dash-docset).
+The recommended way to build the docset is with the included
+`make_docset.py` script.  It downloads the seaborn documentation
+directly from <https://seaborn.pydata.org/>, strips the header
+navigation bar and both sidebars so pages render cleanly in Dash,
+indexes all API symbols into the Dash search database, and packages
+everything as `seaborn.tgz`.
 
 ### Requirements
 
-- [git](https://git-scm.com/)
-- [GitHub CLI (gh)](https://cli.github.com/)
-- [GNU Make](https://www.gnu.org/software/make/)
-- [GNU Tar](https://www.gnu.org/software/tar/)
-- [ImageMagick](https://imagemagick.org/index.php)
-- [Nox](https://nox.thea.codes/en/stable/)
-- [Python 3](https://www.python.org/)
+- Python 3.9+
+- [requests](https://pypi.org/project/requests/)
+- [beautifulsoup4](https://pypi.org/project/beautifulsoup4/)
+
+Install the dependencies with:
+
+```bash
+pip install requests beautifulsoup4
+```
 
 ### Build directions
 
-To build the docs, run:
-
 ```bash
-gh repo clone paw-lu/seaborn-dash-docset
-cd seaborn-dash-docset
-nox --tags build
+cd docsets/Seaborn
+python make_docset.py
 ```
 
-## Building Method 2
+This produces `seaborn.tgz` in the current directory.
 
-- download the latest document from https://github.com/seaborn/seaborn.github.io
-- comment some blocks like `intersphinx_mapping` in `conf.py`
-- `cd seaborn.github.io-master && make html`
-- remove `_sources` and `archive`
-- run the following commands
+#### Options
 
-```bash
-doc2dash -v -n seaborn -i seaborn.github.io-master/_static/logo-tall-lightbg.png -I seaborn.github.io-master/index.html seaborn.github.io-master
-tar cvzf seaborn.tgz seaborn.docset
 ```
+--icon-dir DIR   Directory containing icon.png (16×16) and icon@2x.png
+                 (32×32). Defaults to the script's own directory.
+```
+
+### How it works
+
+1. **Crawls** <https://seaborn.pydata.org/> starting from the index,
+   API reference, tutorials, and a few other key pages, following
+   internal links to discover every HTML page.
+2. **Injects CSS** into each page to hide the header navbar
+   (`nav.bd-header`), primary sidebar (`.bd-sidebar-primary`), and
+   secondary sidebar / TOC (`.bd-sidebar-secondary`) so they do not
+   appear inside Dash.
+3. **Downloads static assets** (CSS, JS, images, fonts) referenced by
+   the HTML pages.
+4. **Indexes** every symbol found in `api.html` into the Dash SQLite
+   search database, assigning appropriate types (`Function`, `Class`,
+   or `Method`).
+5. **Packages** the docset as `seaborn.tgz`.
